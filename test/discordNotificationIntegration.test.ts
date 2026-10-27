@@ -1,0 +1,74 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Db } from '../src/db.js';
+import { buildServer } from '../src/server.js';
+import { createDiscordBusinessBridge, createDiscordChat } from '../src/discordChat.js';
+import { createNotificationBridge, createNotificationPump, createNotificationReconciler } from '../src/discordNotificationTransport.js';
+import { DISCORD_BUSINESS_BOT_ID as botId, DISCORD_BUSINESS_SCOPE as scope } from '../src/discordScope.js';
+
+test('actual bridge and Discord handler reconcile only independently fetched matching bot messages', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'notification-integration-'));
+  const dbPath = join(dir, 'test.sqlite'), token = 'test-only-bridge-token-xxxxxxxxxxxxxxxx';
+  let now = Date.now(), app = buildServer({ dbPath, discordBridge: { ...scope, token }, schedulerClock: () => now });
+  const post = async (url: string, payload: Record<string, unknown>) => { const r = await app.inject({ method: 'POST', url, payload }); assert.equal(r.statusCode, 200, r.body); return r.json(); };
+  const fetcher: typeof fetch = async (_url, init) => { const r = await app.inject({ method: 'POST', url: '/api/discord/business', headers: init?.headers as Record<string, string>, payload: init?.body as string }); return new Response(r.body, { status: r.statusCode, headers: { 'content-type': 'application/json' } }); };
+  const bridge = createNotificationBridge('http://127.0.0.1:4317/api/discord/business', token, fetcher);
+  let remote: any, reads = 0, sends = 0, missing = false;
+  const reconcile = createNotificationReconciler(bridge, async id => { reads++; if (missing) throw new Error('not found'); assert.equal(id, remote.id); return remote; }, botId);
+  const replies: string[] = [], seen = new Set<string>();
+  const activatedAt = now - 1000;
+  const handle = createDiscordChat({ guildId: scope.guildId, channelId: scope.channelId, claim: id => !seen.has(id) && !!seen.add(id), business: { ownerId: scope.ownerId, activatedAt, run: createDiscordBusinessBridge('http://127.0.0.1:4317/api/discord/business', token, fetcher, reconcile) }, answer: async () => 'chat', send: async text => { replies.push(text); } });
+  const message = (id: string, userId: string, text: string, origin: 'gateway' | 'catchup' = 'gateway') => ({ id, userId, text, origin, guildId: scope.guildId, channelId: scope.channelId, bot: false, webhook: false, mentioned: false, createdTimestamp: now });
+  try {
+    const event = await post('/api/mock-events', { source: 'outlook', account: 'mock:primary', project: 'bridge-notify', externalId: 'thread', revision: 1, occurredAt: '2026-10-27T09:00:00Z', operation: 'upsert', details: { subject: 'Review', body: 'Please review.' } });
+    const goal = await post('/api/goals', { project: 'bridge-notify', title: 'Review', completion: 'Draft' });
+    await post(`/api/goals/${goal.id}/plan`, { expectedVersion: 0 });
+    await post(`/api/goals/${goal.id}/step`, { version: 1 }); await post(`/api/goals/${goal.id}/step`, { version: 1 });
+    const detail = (await app.inject(`/api/goals/${goal.id}`)).json();
+    await post(`/api/goals/${goal.id}/notifications`, { enabled: true });
+    const utcMinute = new Date(now).getUTCHours() * 60 + new Date(now).getUTCMinutes();
+    await post(`/api/goals/${goal.id}/notifications/quiet-hours`, { quietHours: { timeZone: 'UTC', startMinute: (utcMinute + 2) % 1440, endMinute: (utcMinute + 4) % 1440 } });
+    assert.equal((await app.inject(`/api/goals/${goal.id}/notifications`)).json().quietHours.time_zone, 'UTC');
+    const deniedQuiet = await app.inject({ method: 'POST', url: `/api/goals/${goal.id}/notifications/quiet-hours`, headers: { origin: 'https://untrusted.example' }, payload: { quietHours: null } });
+    assert.equal(deniedQuiet.statusCode, 403);
+    await post(`/api/goals/${goal.id}/approvals`, { artifactId: detail.artifacts[0].id, targetEventId: event.eventId });
+    const pump = createNotificationPump(bridge, async content => { sends++; remote = { id: '100000000000000010', channel_id: scope.channelId, author: { id: botId, bot: true }, webhook_id: null, content, timestamp: new Date(now).toISOString() }; throw new Error('response lost after acceptance'); }, botId);
+    await pump(); await pump(); assert.equal(sends, 1);
+    let row = (await app.inject(`/api/goals/${goal.id}/notifications`)).json().notifications[0];
+    assert.equal(row.status, 'held');
+    const text = `!알림확인 ${row.id} ${remote.id}`;
+    await handle(message('100000000000000008', '100000000000000005', text));
+    await handle(message('100000000000000011', scope.ownerId, text, 'catchup'));
+    assert.equal(reads, 0);
+    remote.author.id = 'wrong';
+    await handle(message('100000000000000012', scope.ownerId, text));
+    remote.author.id = botId; remote.content += 'changed';
+    await handle(message('100000000000000013', scope.ownerId, text));
+    remote.content = row.content; missing = true;
+    await handle(message('100000000000000014', scope.ownerId, text)); missing = false;
+    assert.equal((await app.inject(`/api/goals/${goal.id}/notifications`)).json().notifications[0].status, 'held');
+    const bad = await app.inject({ method: 'POST', url: '/api/discord/business', payload: { action: 'notification_reconcile', authorId: scope.ownerId, guildId: scope.guildId, channelId: scope.channelId, notificationId: row.id, receipt: remote } });
+    assert.equal(bad.statusCode, 403);
+    const forged = await app.inject({ method: 'POST', url: '/api/discord/business', headers: { 'x-work-assistant-discord-bridge': token }, payload: { action: 'notification_reconcile', authorId: scope.ownerId, guildId: scope.guildId, channelId: scope.channelId, notificationId: row.id, commandMessageId: '100000000000000015', receipt: { ...remote, content: 'forged' } } });
+    assert.equal(forged.statusCode, 400);
+    await app.close(); now += 1000; app = buildServer({ dbPath, discordBridge: { ...scope, token }, schedulerClock: () => now });
+    await handle(message('100000000000000016', scope.ownerId, text));
+    row = (await app.inject(`/api/goals/${goal.id}/notifications`)).json().notifications[0];
+    assert.equal(row.status, 'sent'); assert.equal(row.discord_message_id, remote.id); assert.equal(sends, 1);
+    const readsBeforeRetry = reads;
+    await handle(message('100000000000000017', scope.ownerId, text));
+    assert.equal(reads, readsBeforeRetry);
+    assert.equal((await app.inject(`/api/goals/${goal.id}/notifications`)).json().notifications[0].status, 'sent');
+    assert.ok(replies.some(reply => reply.includes('계속 보류')));
+    assert.ok(replies.some(reply => reply.includes('전송을 기록')));
+    await app.close();
+    const db = new Db(dbPath);
+    try {
+      const audit = db.get<any>('SELECT * FROM discord_notification_reconciliation WHERE notification_id=?', [row.id]);
+      assert.equal(audit.message_id, remote.id); assert.equal(audit.owner_id, scope.ownerId); assert.equal(audit.command_message_id, '100000000000000016'); assert.equal(audit.content_hash.length, 64);
+    } finally { db.close(); }
+  } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});

@@ -1,0 +1,39 @@
+{
+  "name": "officebot",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "node --experimental-sqlite --import tsx src/server.ts",
+    "start": "node --experimental-sqlite --import tsx src/server.ts",
+    "start:openai": "node --experimental-sqlite --import tsx src/server.ts --openai",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-sqlite --import tsx --import ./test/setup.ts --test test/*.test.ts test/*.test.mjs",
+    "discord": "node --experimental-sqlite --import tsx src/discordRuntime.ts",
+    "privacy:audit": "node tools/privacy-audit.mjs"
+  },
+  "dependencies": {
+    "@fastify/static": "10.1.8",
+    "@openai/agents": "0.21.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "discord.js": "14.27.0",
+    "fastify": "^5.4.0",
+    "ignore": "7.0.14",
+    "lucide-react": "^0.468.0",
+    "openai": "^6.7.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "vite": "7.3.7",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.8.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "playwright-core": "^1.48.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "description": "Officebot: 24/7 AI coworker",
+  "license": "MIT"
+}

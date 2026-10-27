@@ -1,0 +1,68 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildServer } from '../src/server.js';
+
+test('two real API goals plan from isolated persisted context and resume after restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'workspace-vertical-'));
+  const dbPath = join(dir, 'test.sqlite');
+  let app = buildServer({ dbPath });
+  const post = async (url: string, payload: Record<string, unknown> = {}) => {
+    const response = await app.inject({ method: 'POST', url, payload });
+    assert.equal(response.statusCode, 200, `${url}: ${response.body}`);
+    return response.json();
+  };
+  try {
+    await post('/api/fixtures/0');
+    await post('/api/fixtures/6');
+    await post('/api/messages', { role: 'user', content: '제안서의 보안 근거를 확인해 주세요' });
+    await post('/api/preferences', { project: 'proposal-alpha', key: 'response_style', value: 'brief', expectedVersion: 0 });
+    await post('/api/preferences', { project: 'separate-beta', key: 'response_style', value: 'detailed', expectedVersion: 0 });
+    const analysis = await post('/api/analyze', { goalText: '제안서 보안 근거 확인' });
+    assert.equal(analysis.memorySources.preferences[0].value, 'brief');
+    assert.match(analysis.output.draftProposal.body, /이전 사용자 대화/);
+    assert.doesNotMatch(analysis.output.draftProposal.body, /Jira:/);
+    await post('/api/messages', { role: 'assistant', content: '분석을 표시했습니다' });
+    assert.equal((await app.inject('/api/state')).json().latestAnalysis.stale, false);
+    const first = await post('/api/goals', { project: 'proposal-alpha', title: '제안서 보안 확인', completion: '검토 초안' });
+    const second = await post('/api/goals', { project: 'separate-beta', title: '배포 일정 확인', completion: '운영 검토' });
+    assert.notEqual(first.id, second.id);
+    const plannedA = await post(`/api/goals/${first.id}/plan`, { expectedVersion: 0 });
+    const plannedB = await post(`/api/goals/${second.id}/plan`, { expectedVersion: 0 });
+    assert.equal(plannedA.version, 1);
+    assert.equal(plannedB.version, 1);
+    assert.equal(plannedA.workflow.planMemory[0].memory.preferences[0].value, 'brief');
+    assert.equal(plannedB.workflow.planMemory[0].memory.preferences[0].value, 'detailed');
+    assert.deepEqual(plannedB.workflow.planMemory[0].memory.conversation, []);
+    await post(`/api/goals/${first.id}/step`, { version: 1 });
+    await post(`/api/goals/${second.id}/step`, { version: 1 });
+    await post('/api/preferences', { project: 'proposal-alpha', key: 'response_style', value: null, expectedVersion: 1 });
+    const stale = await app.inject({ method: 'POST', url: `/api/goals/${first.id}/step`, payload: { version: 1 } });
+    assert.equal(stale.statusCode, 409);
+    assert.equal(stale.json().code, 'stale_memory');
+    const replanned = await post(`/api/goals/${first.id}/plan`, { expectedVersion: 1 });
+    assert.equal(replanned.version, 2);
+    assert.deepEqual(replanned.workflow.planMemory[1].memory.preferences, []);
+    await app.close();
+    app = buildServer({ dbPath });
+    const ids = (await app.inject('/api/goals')).json().map((g: any) => g.id);
+    assert.ok(ids.includes(first.id) && ids.includes(second.id));
+    const original = await app.inject({ method: 'POST', url: `/api/goals/${first.id}/step`, payload: { version: 1 } });
+    assert.equal(original.statusCode, 409);
+    assert.equal(original.json().code, 'stale_plan');
+    assert.equal((await post(`/api/goals/${first.id}/step`, { version: 2 })).stepId, 'evidence');
+    assert.equal((await post(`/api/goals/${first.id}/step`, { version: 2 })).stepId, 'draft');
+    assert.equal((await post(`/api/goals/${second.id}/step`, { version: 1 })).stepId, 'draft');
+    const a = (await app.inject(`/api/goals/${first.id}`)).json();
+    const b = (await app.inject(`/api/goals/${second.id}`)).json();
+    assert.equal(a.artifacts.length, 1);
+    assert.equal(b.artifacts.length, 1);
+    assert.match(a.artifacts[0].content, /outlook:outlook-001/);
+    assert.match(b.artifacts[0].content, /teams:teams-004/);
+    assert.doesNotMatch(b.artifacts[0].content, /보안 근거/);
+    assert.equal((await app.inject('/api/state')).json().outcomes.length, 0);
+    assert.equal((await app.inject('/api/preferences?project=proposal-alpha')).json()[0].value, null);
+  } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});

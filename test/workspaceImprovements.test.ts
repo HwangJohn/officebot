@@ -1,0 +1,118 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { buildServer } from '../src/server.js';
+import { Db } from '../src/db.js';
+import { createWorkspaceImprovements } from '../src/workspaceImprovements.js';
+
+const target = 'src/improvementExample.ts';
+function patch(expression: string, path = target) {
+  return `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,4 +1,4 @@\n // A restricted, inert fixture for reviewing equivalent limit expressions.\n export function capReviewItems(value: number) {\n-  return Math.min(value, 10);\n+  ${expression}\n }\n`;
+}
+test('goal-scoped improvement review persists evidence, exact patch and trusted results without changing source', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'workspace-improvement-')); const dbPath = join(dir, 'test.sqlite');
+  let app = buildServer({ dbPath });
+  const call = async (url: string, payload: Record<string, unknown>) => app.inject({ method: 'POST', url, payload });
+  const post = async (url: string, payload: Record<string, unknown>) => { const r = await call(url, payload); assert.equal(r.statusCode, 200, r.body); return r.json(); };
+  const record = { source: 'teams', account: 'mock:primary', project: 'alpha', externalId: 'one', revision: 1, occurredAt: '2026-10-27T00:00:00Z', operation: 'upsert', details: { channel: 'alpha', text: 'Review workload needs a clear bound' } };
+  const sourcePath = resolve('src/improvementExample.ts'); const original = readFileSync(sourcePath, 'utf8');
+  try {
+    await post('/api/mock-events', record);
+    await post('/api/mock-events', { ...record, project: 'beta', details: { channel: 'beta', text: 'Beta only' } });
+    const alpha = await post('/api/goals', { project: 'alpha', title: 'Review improvements', completion: 'Inspect proposal' });
+    const beta = await post('/api/goals', { project: 'beta', title: 'Other project', completion: 'Inspect' });
+    const ctx = (await app.inject(`/api/goals/${alpha.id}/improvements/context`)).json();
+    const betaCtx = (await app.inject(`/api/goals/${beta.id}/improvements/context`)).json();
+    assert.equal(ctx.scope, 'inert_limit_fixture'); assert.equal(ctx.target, target);
+    const body = { title: 'Clarify bound', rationale: 'Equivalent expression for review', patch: patch('return Math.min(10, value);'), sourceHash: ctx.sourceHash, evidence: ctx.evidence.map((e: any) => ({ id: e.id, sha256: e.sha256 })) };
+    assert.equal((await call(`/api/goals/${alpha.id}/improvements`, { ...body, sourceHash: '0'.repeat(64) })).statusCode, 409);
+    assert.equal((await call(`/api/goals/${alpha.id}/improvements`, { ...body, evidence: [{ id: betaCtx.evidence[0].id, sha256: betaCtx.evidence[0].sha256 }] })).statusCode, 409);
+    assert.notEqual((await call(`/api/goals/${alpha.id}/improvements`, { ...body, allowedFiles: ['other.ts'] })).statusCode, 200);
+    const proposal = await post(`/api/goals/${alpha.id}/improvements`, body);
+    assert.equal(proposal.status, 'proposed'); assert.equal(proposal.patch, body.patch);
+    assert.notEqual((await call(`/api/goals/${beta.id}/improvements/${proposal.id}/review`, {})).statusCode, 200);
+    const review = await post(`/api/goals/${alpha.id}/improvements/${proposal.id}/review`, {});
+    assert.equal(review.status, 'review_required'); assert.equal(review.review.finalApplication, 'requires_explicit_review');
+    assert.equal(review.review.checks[0].passed, true); assert.equal(review.review.baseFile, original); assert.match(review.review.reviewedFile, /Math\.min\(10, value\)/);
+    assert.equal(readFileSync(sourcePath, 'utf8'), original);
+    const broken = await post(`/api/goals/${alpha.id}/improvements`, { ...body, title: 'Wrong bound', patch: patch('return Math.min(value, 100);') });
+    assert.equal((await post(`/api/goals/${alpha.id}/improvements/${broken.id}/review`, {})).status, 'checks_failed');
+    const outside = await post(`/api/goals/${alpha.id}/improvements`, { ...body, title: 'Outside scope', patch: patch('return Math.min(10, value);', 'src/policy.ts') });
+    assert.equal((await post(`/api/goals/${alpha.id}/improvements/${outside.id}/review`, {})).status, 'rejected');
+    const pending = await post(`/api/goals/${alpha.id}/improvements`, { ...body, title: 'Stale evidence' });
+    await post('/api/mock-events', { ...record, revision: 2, details: { channel: 'alpha', text: 'Changed evidence' } });
+    assert.equal((await call(`/api/goals/${alpha.id}/improvements/${pending.id}/review`, {})).statusCode, 409);
+    assert.equal((await app.inject(`/api/goals/${alpha.id}/improvements`)).json().find((x: any) => x.id === review.id).effectiveStatus, 'stale');
+    await app.close(); app = buildServer({ dbPath });
+    const restored = (await app.inject(`/api/goals/${alpha.id}/improvements`)).json();
+    assert.equal(restored.length, 4); assert.equal(restored.find((x: any) => x.id === review.id).review.checks[0].passed, true);
+    assert.equal((await app.inject(`/api/goals/${beta.id}/improvements`)).json().length, 0);
+    assert.equal(readFileSync(sourcePath, 'utf8'), original);
+  } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('persisted blocked review produces a bounded summary proposal with independent checks and restart freshness', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'summary-improvement-')); const dbPath = join(dir, 'test.sqlite');
+  const time = Date.UTC(2026, 9, 27); let app = buildServer({ dbPath, schedulerClock: () => time });
+  const post = async (url: string, payload: Record<string, unknown> = {}) => { const r = await app.inject({ method: 'POST', url, payload }); assert.equal(r.statusCode, 200, r.body); return r.json(); };
+  const blocked = { source: 'jira', account: 'mock:primary', project: 'alpha', externalId: 'J-1', revision: 1, occurredAt: '2026-10-27T00:00:00Z', operation: 'upsert', details: { issueKey: 'J-1', status: 'blocked', summary: 'Waiting' } };
+  const original = readFileSync(resolve('src/reviewSummary.ts'), 'utf8');
+  let db: Db | undefined;
+  try {
+    await post('/api/mock-events', blocked);
+    await post('/api/mock-events', { source: 'teams', account: 'mock:primary', project: 'alpha', externalId: 'team', revision: 1, occurredAt: '2026-10-27T00:00:01Z', operation: 'upsert', details: { channel: 'alpha', text: 'Healthy item' } });
+    await post('/api/mock-events', { ...blocked, project: 'beta', externalId: 'J-2', details: { issueKey: 'J-2', status: 'done', summary: 'Done' } });
+    const alpha = await post('/api/goals', { project: 'alpha', title: 'Release', completion: 'Review' });
+    const beta = await post('/api/goals', { project: 'beta', title: 'Other', completion: 'Review' });
+    await post(`/api/goals/${alpha.id}/schedules`, { kind: 'daily_review', firstDueAt: time });
+    await post(`/api/goals/${beta.id}/schedules`, { kind: 'weekly_review', firstDueAt: time });
+    await post('/api/scheduler/tick');
+    db = new Db(dbPath); const service = createWorkspaceImprovements(db, () => '2026-10-27T00:00:00Z');
+    assert.throws(() => service.propose(beta.id), /improvement_no_review_evidence/);
+    const proposal = service.propose(alpha.id);
+    assert.equal(proposal.scope, 'review_summary_v1');
+    assert.equal(proposal.evidenceSnapshot?.sources.filter(s => s.blocked).length, 1);
+    assert.equal(proposal.evidenceSnapshot?.sources.length, 2);
+    assert.equal(service.list(beta.id).length, 0);
+    assert.throws(() => service.review(beta.id, proposal.id), /improvement_not_found/);
+    const result = service.review(alpha.id, proposal.id);
+    assert.equal(result.status, 'review_required'); assert.equal(result.review.checks.length, 4);
+    assert.ok(result.review.checks.every((c: any) => c.passed));
+    assert.match(result.review.example.after, /차단·지연 1건/);
+    assert.ok(result.review.example.after.includes(proposal.evidenceSnapshot!.sources.find(s => s.blocked)!.reference));
+    assert.equal(result.review.baseFile, original); assert.equal(readFileSync(resolve('src/reviewSummary.ts'), 'utf8'), original);
+    const badCount = service.propose(alpha.id);
+    db.run('UPDATE workspace_improvements SET patch=? WHERE id=?', [badCount.patch.replace('${blockedReferences.length}건', '${blockedReferences.length + 1}건'), badCount.id]);
+    assert.equal(service.review(alpha.id, badCount.id).status, 'checks_failed');
+    const noProvenance = service.propose(alpha.id);
+    db.run('UPDATE workspace_improvements SET patch=? WHERE id=?', [noProvenance.patch.replace(" (${blockedReferences.join(', ')})", ''), noProvenance.id]);
+    assert.equal(service.review(alpha.id, noProvenance.id).status, 'checks_failed');
+    const malicious = service.propose(alpha.id);
+    db.run('UPDATE workspace_improvements SET patch=? WHERE id=?', [malicious.patch.replace('blockedReferences.length ?', 'globalThis.alert(1) ?'), malicious.id]);
+    assert.equal(service.review(alpha.id, malicious.id).status, 'checks_failed');
+    const outside = service.propose(alpha.id);
+    db.run('UPDATE workspace_improvements SET patch=? WHERE id=?', [outside.patch.replaceAll('src/reviewSummary.ts', 'src/other.ts'), outside.id]);
+    assert.equal(service.review(alpha.id, outside.id).status, 'rejected');
+    const staleBase = service.propose(alpha.id);
+    db.run('UPDATE workspace_improvements SET source_hash=? WHERE id=?', ['0'.repeat(64), staleBase.id]);
+    assert.throws(() => service.review(alpha.id, staleBase.id), /stale_source/);
+    assert.equal(service.list(alpha.id).find(x => x.id === staleBase.id)?.effectiveStatus, 'stale');
+    const pending = service.propose(alpha.id);
+    db.close(); db = undefined; await app.close(); app = buildServer({ dbPath, schedulerClock: () => time });
+    db = new Db(dbPath); const restored = createWorkspaceImprovements(db, () => '2026-10-27T00:00:00Z');
+    assert.equal(restored.list(alpha.id).find(x => x.id === result.id)?.effectiveStatus, 'review_required');
+    assert.equal(restored.list(alpha.id).find(x => x.id === result.id)?.review.example.after, result.review.example.after);
+    const savedReview = db.get<{ artifact_json: string }>('SELECT artifact_json FROM scheduler_reviews WHERE job_id=?', [result.reviewId!])!;
+    db.run('UPDATE scheduler_reviews SET artifact_json=? WHERE job_id=?', [savedReview.artifact_json.replace('Waiting', 'Changed'), result.reviewId!]);
+    assert.equal(restored.list(alpha.id).find(x => x.id === result.id)?.effectiveStatus, 'stale');
+    assert.throws(() => restored.review(alpha.id, pending.id), /stale_evidence/);
+    db.run('UPDATE scheduler_reviews SET artifact_json=? WHERE job_id=?', [savedReview.artifact_json, result.reviewId!]);
+    await post('/api/mock-events', { ...blocked, revision: 2, details: { ...blocked.details, status: 'done' } });
+    assert.throws(() => restored.review(alpha.id, pending.id), /stale_evidence/);
+    assert.equal(restored.list(alpha.id).find(x => x.id === result.id)?.effectiveStatus, 'stale');
+    assert.throws(() => restored.propose(alpha.id), /improvement_no_review_evidence/);
+    assert.equal(readFileSync(resolve('src/reviewSummary.ts'), 'utf8'), original);
+  } finally { db?.close(); await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});

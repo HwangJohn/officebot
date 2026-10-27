@@ -1,0 +1,7 @@
+// Synthetic scope used only by the offline test process.
+delete process.env.OPENAI_API_KEY;
+delete process.env.DISCORD_BOT_TOKEN;
+process.env.WORK_ASSISTANT_DISCORD_OWNER_ID = '100000000000000901';
+process.env.WORK_ASSISTANT_DISCORD_GUILD_ID = '100000000000000902';
+process.env.WORK_ASSISTANT_DISCORD_CHANNEL_ID = '100000000000000903';
+process.env.DISCORD_BOT_ID = '100000000000000904';

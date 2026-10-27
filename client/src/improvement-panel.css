@@ -1,0 +1,8 @@
+.improvement-panel { margin-top: 1rem; padding: 1rem; border: 1px solid #c8d2df; border-radius: .65rem; background: #fff; }
+.improvement-panel h3, .improvement-panel h4 { margin: 0 0 .5rem; }
+.improvement-panel button { margin: .4rem 0; }
+.improvement-panel [role="alert"] { color: #9b1c1c; }
+.improvement-entry { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #dce3ec; overflow-wrap: anywhere; }
+.improvement-entry pre { overflow: auto; max-height: 20rem; padding: .75rem; background: #f3f6fa; white-space: pre; }
+.improvement-entry details { margin: .5rem 0; }
+.improvement-example { padding: .5rem .75rem; background: #f3f6fa; border-radius: .4rem; }

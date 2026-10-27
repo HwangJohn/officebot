@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Officebot: work keeps its place</title>
+  <desc id="desc">A conceptual illustration of an assistant tracking a deadline, a quote, and an approval. It is not a screenshot.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#111d32"/><stop offset="1" stop-color="#26335a"/></linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#b5f4dc"/><stop offset="1" stop-color="#72cde1"/></linearGradient>
+  </defs>
+  <rect width="1200" height="620" rx="32" fill="url(#bg)"/>
+  <circle cx="1020" cy="104" r="190" fill="#8c82f5" opacity=".09"/>
+  <circle cx="694" cy="520" r="200" fill="#80dbc4" opacity=".06"/>
+  <g font-family="system-ui, -apple-system, Segoe UI, sans-serif">
+    <text x="72" y="91" font-size="20" font-weight="700" letter-spacing="3" fill="#a4efda">OFFICEBOT</text>
+    <text x="72" y="190" font-size="58" font-weight="750" fill="#fff">Work keeps</text>
+    <text x="72" y="260" font-size="58" font-weight="750" fill="#fff">its place.</text>
+    <text x="72" y="326" font-size="25" fill="#c6d4e7">Evidence in context.</text>
+    <text x="72" y="363" font-size="25" fill="#c6d4e7">Decisions in your hands.</text>
+    <rect x="72" y="433" width="235" height="49" rx="24" fill="#a9ead6"/>
+    <text x="100" y="465" font-size="18" font-weight="700" fill="#173342">A SYNTHETIC STORY</text>
+    <text x="72" y="566" font-size="17" fill="#9dafc9">Concept illustration · not a runtime screenshot</text>
+  </g>
+  <g transform="translate(625 90)">
+    <rect x="15" y="18" width="465" height="455" rx="30" fill="#0b1527" opacity=".35"/>
+    <rect width="465" height="455" rx="30" fill="#f5faf9"/>
+    <rect x="30" y="30" width="62" height="62" rx="19" fill="url(#glow)"/>
+    <path d="M47 59h28M61 46v26" stroke="#17394b" stroke-width="5" stroke-linecap="round"/>
+    <g font-family="system-ui, -apple-system, Segoe UI, sans-serif">
+      <text x="109" y="57" font-size="22" font-weight="700" fill="#233449">A proposal in motion</text>
+      <text x="109" y="83" font-size="16" fill="#627587">One thing at a time</text>
+      <path d="M56 143v212" stroke="#c9dfdb" stroke-width="3"/>
+      <circle cx="56" cy="151" r="12" fill="#81d7c0"/><path d="m51 151 4 4 7-8" fill="none" stroke="#17394b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="87" y="145" font-size="20" font-weight="700" fill="#233449">Deadline changed</text>
+      <text x="87" y="171" font-size="16" fill="#627587">Correction kept as evidence</text>
+      <circle cx="56" cy="244" r="12" fill="#81d7c0"/><path d="m51 244 4 4 7-8" fill="none" stroke="#17394b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="87" y="238" font-size="20" font-weight="700" fill="#233449">Quote arrived</text>
+      <text x="87" y="264" font-size="16" fill="#627587">Draft ready for review</text>
+      <circle cx="56" cy="337" r="12" fill="#ddccff"/><circle cx="56" cy="337" r="4" fill="#655394"/>
+      <text x="87" y="331" font-size="20" font-weight="700" fill="#233449">Your approval</text>
+      <text x="87" y="357" font-size="16" fill="#627587">A human makes the call</text>
+      <rect x="30" y="397" width="405" height="31" rx="15" fill="#e7f2ef"/>
+      <text x="48" y="418" font-size="15" font-weight="650" fill="#42685e">MOCK EVENTS  ·  MOCK EFFECTS</text>
+    </g>
+  </g>
+</svg>
